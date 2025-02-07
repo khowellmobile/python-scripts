@@ -5,7 +5,13 @@ import time
 from bs4 import BeautifulSoup  # type: ignore
 import google.generativeai as genai  # type: ignore
 
-API_KEY = "AIzaSyBAi7XndVKZfpmkCa9d80KxNM_q3ZwrK24"
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+api_key = os.getenv("API_KEY")
+
+API_KEY = api_key
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
 ai_prompt_text = """
