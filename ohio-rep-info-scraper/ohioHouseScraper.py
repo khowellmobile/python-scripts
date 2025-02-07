@@ -3,7 +3,7 @@ import threading
 import queue
 import time
 from bs4 import BeautifulSoup  # type: ignore
-import google.generativeai as genai  # type: ignore
+from google import genai  # type: ignore
 
 import os
 from dotenv import load_dotenv
@@ -12,8 +12,8 @@ load_dotenv()
 api_key = os.getenv("API_KEY")
 
 API_KEY = api_key
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+client = genai.Client(api_key=API_KEY)
+
 ai_prompt_text = """
 
     The text at the end of this prompt is a biography for a memeber Ohio State House of Representatives. Using the biography return a summarization of the biography. The summarization format and notes on each section is described next.
@@ -60,7 +60,7 @@ def main():
 
     rep_name_divs = soup.find_all("div", class_="media-overlay-caption-text-line-1")
 
-    for div in rep_name_divs[:30]:
+    for div in rep_name_divs:
         # Use re.sub in future
         rep_names.append(
             div.text.strip().replace(" ", "-").replace(".", "").replace(",", "").lower()
@@ -72,7 +72,8 @@ def main():
     while not people_queue.empty():
         people.update(people_queue.get())
 
-    
+    while not error_queue.empty():
+        print(error_queue.get())
 
 
 def getInfo(rep_name):
@@ -81,7 +82,7 @@ def getInfo(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -93,9 +94,7 @@ def getInfo(rep_name):
     for module in divs:
         module_text = module.get_text()
         if "Hometown" in module_text:
-            home_town = module.find(
-                "div", class_="member-info-bar-value"
-            ).text.strip()
+            home_town = module.find("div", class_="member-info-bar-value").text.strip()
 
         if any(keyword in module_text for keyword in address_keywords):
             address_number_module = module.find_all(
@@ -118,7 +117,7 @@ def getBio(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}/biography"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -133,7 +132,16 @@ def getBio(rep_name):
                 paragraph.text.strip() for paragraph in bio_paragraphs
             )
 
-            response = model.generate_content(ai_prompt_text + " " + combined_bio)
+            try:
+                print(f"Gemini API call for {rep_name} at {time.time()}")
+                response = client.models.generate_content(
+                    model="gemini-1.5-flash",
+                    contents=ai_prompt_text + " " + combined_bio,
+                )
+
+            except Exception as e:
+                print(f"Gemini Response Error: {e}")
+                return "AI Error"
 
             values = response.text.split("|")
 
@@ -147,7 +155,7 @@ def getCommittees(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}/committees"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -158,7 +166,8 @@ def getCommittees(rep_name):
 
     return committees
 
-def checkResponse(response):
+
+def checkURLResponse(response):
     if response.status_code:
         if response.status_code != 200:
             print("Bad response code: ", response.status_code)
@@ -177,18 +186,25 @@ def process_rep(rep_name, result_queue, error_queue):
         rep_obj[func_name] = func(rep_name)
 
     threads = [
-        threading.Thread(target=fetch_function_results, args=(getInfo, "getInfo", rep_name)),
-        threading.Thread(target=fetch_function_results, args=(getBio, "getBio", rep_name)),
-        threading.Thread(target=fetch_function_results, args=(getCommittees, "getCommittees", rep_name))
+        threading.Thread(
+            target=fetch_function_results, args=(getInfo, "getInfo", rep_name)
+        ),
+        threading.Thread(
+            target=fetch_function_results, args=(getBio, "getBio", rep_name)
+        ),
+        threading.Thread(
+            target=fetch_function_results,
+            args=(getCommittees, "getCommittees", rep_name),
+        ),
     ]
 
     for thread in threads:
         thread.start()
 
-    for thread in threads: 
+    for thread in threads:
         thread.join()
 
-    if rep_obj['getBio'] == "AI Error":
+    if "getBio" in rep_obj.keys() and rep_obj["getBio"] == "AI Error":
         error_queue.put(rep_name)
 
     result_queue.put({rep_name: rep_obj})
@@ -198,16 +214,20 @@ def process_batch(batch, result_queue, error_queue):
     batch_threads = []
 
     for rep_name in batch:
-        batch_thread = threading.Thread(target=process_rep, args=(rep_name, result_queue, error_queue))
+        batch_thread = threading.Thread(
+            target=process_rep, args=(rep_name, result_queue, error_queue)
+        )
         batch_threads.append(batch_thread)
         batch_thread.start()
         time.sleep(3)
-        
+
     for batch_thread in batch_threads:
         batch_thread.join()
 
 
-def batch_processor(inputs, batch_size=15, total_batches=2, interval=60):
+def batch_processor(inputs, batch_size=15, total_batches=7, interval=60):
+    start_time = time.time()
+
     batches = [inputs[i : i + batch_size] for i in range(0, len(inputs), batch_size)]
     result_queue = queue.Queue()
     error_queue = queue.Queue()
@@ -218,14 +238,16 @@ def batch_processor(inputs, batch_size=15, total_batches=2, interval=60):
             batch = batches[i]
             print(f"Starting batch {i + 1}/{total_batches}...")
 
-            batch_thread = threading.Thread(target=process_batch, args=(batch, result_queue, error_queue))
+            batch_thread = threading.Thread(
+                target=process_batch, args=(batch, result_queue, error_queue)
+            )
             batch_thread.start()
-
-            print(f"Waiting for {interval} seconds before starting the next batch...")
             time.sleep(interval)
 
     for batch_thread in batch_threads:
         batch_thread.join()
+
+    print(f"Total time for run = {time.time() - start_time}")
 
     return result_queue, error_queue
 
