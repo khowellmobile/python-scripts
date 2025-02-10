@@ -5,6 +5,7 @@ import time
 from bs4 import BeautifulSoup  # type: ignore
 import google.generativeai as genai  # type: ignore
 
+
 API_KEY = "AIzaSyBAi7XndVKZfpmkCa9d80KxNM_q3ZwrK24"
 genai.configure(api_key=API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -44,7 +45,7 @@ ai_prompt_text = """
     """
 
 
-def main():
+def run_scraper(add_to_ui_queue):
     """rep_names = ["munira-abdullahi", "darnell-t-brewer", "karen-brownlee"]"""
     rep_names = []
     url = "https://ohiohouse.gov/members/directory?start=1&sort=LastName"
@@ -60,13 +61,13 @@ def main():
             div.text.strip().replace(" ", "-").replace(".", "").replace(",", "").lower()
         )
 
-    people_queue, error_queue = batch_processor(rep_names)
+    people_queue, error_queue = batch_processor(rep_names, add_to_ui_queue)
 
     people = {}
     while not people_queue.empty():
         people.update(people_queue.get())
 
-    
+    add_to_ui_queue("Finished Processing")
 
 
 def getInfo(rep_name):
@@ -87,9 +88,7 @@ def getInfo(rep_name):
     for module in divs:
         module_text = module.get_text()
         if "Hometown" in module_text:
-            home_town = module.find(
-                "div", class_="member-info-bar-value"
-            ).text.strip()
+            home_town = module.find("div", class_="member-info-bar-value").text.strip()
 
         if any(keyword in module_text for keyword in address_keywords):
             address_number_module = module.find_all(
@@ -152,6 +151,7 @@ def getCommittees(rep_name):
 
     return committees
 
+
 def checkResponse(response):
     if response.status_code:
         if response.status_code != 200:
@@ -164,44 +164,58 @@ def checkResponse(response):
 
 
 # Process one rep and returns a person object
-def process_rep(rep_name, result_queue, error_queue):
+def process_rep(rep_name, result_queue, error_queue, add_to_ui_queue):
     rep_obj = {}
 
     def fetch_function_results(func, func_name, rep_name):
         rep_obj[func_name] = func(rep_name)
 
     threads = [
-        threading.Thread(target=fetch_function_results, args=(getInfo, "getInfo", rep_name)),
-        threading.Thread(target=fetch_function_results, args=(getBio, "getBio", rep_name)),
-        threading.Thread(target=fetch_function_results, args=(getCommittees, "getCommittees", rep_name))
+        threading.Thread(
+            target=fetch_function_results, args=(getInfo, "getInfo", rep_name)
+        ),
+        threading.Thread(
+            target=fetch_function_results, args=(getBio, "getBio", rep_name)
+        ),
+        threading.Thread(
+            target=fetch_function_results,
+            args=(getCommittees, "getCommittees", rep_name),
+        ),
     ]
 
     for thread in threads:
+        add_to_ui_queue(f"Starting Thread : {rep_name} at {getTime()}")
         thread.start()
 
-    for thread in threads: 
+    for thread in threads:
+        add_to_ui_queue(f"Finishing Thread : {rep_name} at {getTime()}")
         thread.join()
 
-    if rep_obj['getBio'] == "AI Error":
+    if rep_obj["getBio"] == "AI Error":
         error_queue.put(rep_name)
 
     result_queue.put({rep_name: rep_obj})
 
 
-def process_batch(batch, result_queue, error_queue):
+def process_batch(batch, result_queue, error_queue, add_to_ui_queue):
     batch_threads = []
 
     for rep_name in batch:
-        batch_thread = threading.Thread(target=process_rep, args=(rep_name, result_queue, error_queue))
+        batch_thread = threading.Thread(
+            target=process_rep,
+            args=(rep_name, result_queue, error_queue, add_to_ui_queue),
+        )
         batch_threads.append(batch_thread)
         batch_thread.start()
         time.sleep(3)
-        
+
     for batch_thread in batch_threads:
         batch_thread.join()
 
 
-def batch_processor(inputs, batch_size=15, total_batches=2, interval=60):
+def batch_processor(
+    inputs, add_to_ui_queue, batch_size=15, total_batches=2, interval=60
+):
     batches = [inputs[i : i + batch_size] for i in range(0, len(inputs), batch_size)]
     result_queue = queue.Queue()
     error_queue = queue.Queue()
@@ -210,12 +224,17 @@ def batch_processor(inputs, batch_size=15, total_batches=2, interval=60):
     for i in range(total_batches):
         if i < len(batches):
             batch = batches[i]
-            print(f"Starting batch {i + 1}/{total_batches}...")
+            add_to_ui_queue(f"Starting batch {i + 1}/{total_batches}...")
 
-            batch_thread = threading.Thread(target=process_batch, args=(batch, result_queue, error_queue))
+            batch_thread = threading.Thread(
+                target=process_batch,
+                args=(batch, result_queue, error_queue, add_to_ui_queue),
+            )
             batch_thread.start()
 
-            print(f"Waiting for {interval} seconds before starting the next batch...")
+            add_to_ui_queue(
+                f"Waiting for {interval} seconds before starting the next batch..."
+            )
             time.sleep(interval)
 
     for batch_thread in batch_threads:
@@ -224,5 +243,12 @@ def batch_processor(inputs, batch_size=15, total_batches=2, interval=60):
     return result_queue, error_queue
 
 
-if __name__ == "__main__":
-    main()
+def getTime():
+    current_time = time.time()
+
+    hours, remainder = divmod(current_time, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    formatted_time = f"{int(hours)}:{int(minutes):02}:{int(seconds):02}"
+
+    return formatted_time
