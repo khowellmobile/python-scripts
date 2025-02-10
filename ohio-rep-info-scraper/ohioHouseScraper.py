@@ -3,12 +3,17 @@ import threading
 import queue
 import time
 from bs4 import BeautifulSoup  # type: ignore
-import google.generativeai as genai  # type: ignore
+from google import genai  # type: ignore
 
+import os
+from dotenv import load_dotenv
 
-API_KEY = "AIzaSyBAi7XndVKZfpmkCa9d80KxNM_q3ZwrK24"
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash")
+load_dotenv()
+api_key = os.getenv("API_KEY")
+
+API_KEY = api_key
+client = genai.Client(api_key=API_KEY)
+
 ai_prompt_text = """
 
     The text at the end of this prompt is a biography for a memeber Ohio State House of Representatives. Using the biography return a summarization of the biography. The summarization format and notes on each section is described next.
@@ -55,7 +60,7 @@ def run_scraper(add_to_ui_queue):
 
     rep_name_divs = soup.find_all("div", class_="media-overlay-caption-text-line-1")
 
-    for div in rep_name_divs[:30]:
+    for div in rep_name_divs:
         # Use re.sub in future
         rep_names.append(
             div.text.strip().replace(" ", "-").replace(".", "").replace(",", "").lower()
@@ -67,6 +72,9 @@ def run_scraper(add_to_ui_queue):
     while not people_queue.empty():
         people.update(people_queue.get())
 
+    while not error_queue.empty():
+        print(error_queue.get())
+        
     add_to_ui_queue("Finished Processing")
 
 
@@ -76,7 +84,7 @@ def getInfo(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -111,7 +119,7 @@ def getBio(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}/biography"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -126,7 +134,16 @@ def getBio(rep_name):
                 paragraph.text.strip() for paragraph in bio_paragraphs
             )
 
-            response = model.generate_content(ai_prompt_text + " " + combined_bio)
+            try:
+                print(f"Gemini API call for {rep_name} at {time.time()}")
+                response = client.models.generate_content(
+                    model="gemini-1.5-flash",
+                    contents=ai_prompt_text + " " + combined_bio,
+                )
+
+            except Exception as e:
+                print(f"Gemini Response Error: {e}")
+                return "AI Error"
 
             values = response.text.split("|")
 
@@ -140,7 +157,7 @@ def getCommittees(rep_name):
     url = f"https://ohiohouse.gov/members/{rep_name}/committees"
     response = requests.get(url)
 
-    if checkResponse(response) != 0:
+    if checkURLResponse(response) != 0:
         return None
 
     soup = BeautifulSoup(response.content, "html.parser")
@@ -152,7 +169,7 @@ def getCommittees(rep_name):
     return committees
 
 
-def checkResponse(response):
+def checkURLResponse(response):
     if response.status_code:
         if response.status_code != 200:
             print("Bad response code: ", response.status_code)
@@ -191,7 +208,7 @@ def process_rep(rep_name, result_queue, error_queue, add_to_ui_queue):
         add_to_ui_queue(f"Finishing Thread : {rep_name} at {getTime()}")
         thread.join()
 
-    if rep_obj["getBio"] == "AI Error":
+    if "getBio" in rep_obj.keys() and rep_obj["getBio"] == "AI Error":
         error_queue.put(rep_name)
 
     result_queue.put({rep_name: rep_obj})
