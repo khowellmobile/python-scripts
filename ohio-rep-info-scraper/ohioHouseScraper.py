@@ -4,7 +4,6 @@ import queue
 import time
 from bs4 import BeautifulSoup  # type: ignore
 from google import genai  # type: ignore
-
 import os
 from dotenv import load_dotenv
 
@@ -60,7 +59,7 @@ def run_scraper(add_to_ui_queue):
 
     rep_name_divs = soup.find_all("div", class_="media-overlay-caption-text-line-1")
 
-    for div in rep_name_divs:
+    for div in rep_name_divs[:30]:
         # Use re.sub in future
         rep_names.append(
             div.text.strip().replace(" ", "-").replace(".", "").replace(",", "").lower()
@@ -74,6 +73,8 @@ def run_scraper(add_to_ui_queue):
 
     while not error_queue.empty():
         print(error_queue.get())
+
+        print(people)
         
     add_to_ui_queue("Finished Processing")
 
@@ -135,7 +136,6 @@ def getBio(rep_name):
             )
 
             try:
-                print(f"Gemini API call for {rep_name} at {time.time()}")
                 response = client.models.generate_content(
                     model="gemini-1.5-flash",
                     contents=ai_prompt_text + " " + combined_bio,
@@ -164,7 +164,7 @@ def getCommittees(rep_name):
 
     media_captions = soup.find_all("div", class_="media-overlay-caption")
 
-    committees = ",".join(caption.text.strip() for caption in media_captions)
+    committees = ", ".join(caption.text.strip() for caption in media_captions)
 
     return committees
 
@@ -199,18 +199,17 @@ def process_rep(rep_name, result_queue, error_queue, add_to_ui_queue):
             args=(getCommittees, "getCommittees", rep_name),
         ),
     ]
-
+    
+    add_to_ui_queue(f"Starting Thread : {rep_name} at {getTime()}")
     for thread in threads:
-        add_to_ui_queue(f"Starting Thread : {rep_name} at {getTime()}")
         thread.start()
 
     for thread in threads:
-        add_to_ui_queue(f"Finishing Thread : {rep_name} at {getTime()}")
         thread.join()
+    add_to_ui_queue(f"Finishing Thread : {rep_name} at {getTime()}")
 
     if "getBio" in rep_obj.keys() and rep_obj["getBio"] == "AI Error":
         error_queue.put(rep_name)
-
     result_queue.put({rep_name: rep_obj})
 
 
@@ -261,11 +260,9 @@ def batch_processor(
 
 
 def getTime():
-    current_time = time.time()
-
-    hours, remainder = divmod(current_time, 3600)
-    minutes, seconds = divmod(remainder, 60)
-
-    formatted_time = f"{int(hours)}:{int(minutes):02}:{int(seconds):02}"
+    current_time = time.localtime()
+    formatted_time = time.strftime("%H:%M:%S", current_time)
 
     return formatted_time
+
+

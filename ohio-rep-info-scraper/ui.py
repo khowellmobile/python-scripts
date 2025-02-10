@@ -2,33 +2,38 @@ import tkinter as tk
 
 import queue
 import threading
+import time
 
 from ohioHouseScraper import run_scraper
 
 print_queue = queue.Queue()
+scraper_is_running = False
 
 
-def print_to_text_box(text):
+def update_text_box():
     while True:
-        text = print_queue.get()
+        try:
+            # Try to get text from the queue
+            text = print_queue.get_nowait()
+            text_box.insert(tk.END, text)
+            text_box.yview(tk.END)
 
-        text_box.after(0, lambda: update_text_box(text, text_box))
+            if text == "Finished Processing":
+                break
+        except queue.Empty:
+            pass
 
-        if text == "Finished Processing":
-            break
-
-def update_text_box(text, text_box):
-    text_box.insert(tk.END, text + "\n")
-    text_box.yview(tk.END)
+        time.sleep(0.1)
 
 
 def run_scraper_click():
-    threading.Thread(target=print_to_text_box, daemon=True).start()
-    run_scraper(add_to_ui_queue)
+    threading.Thread(target=run_scraper, args=(add_to_ui_queue,), daemon=True).start()
+    threading.Thread(target=update_text_box, daemon=True).start()
 
 
 def add_to_ui_queue(text):
     print_queue.put(text + "\n")
+    print(text)
 
 
 window_width = 800
